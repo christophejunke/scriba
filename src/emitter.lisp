@@ -15,6 +15,12 @@
      (write-string ,name ,stream)
      ,@body))
 
+(defun extra-attributes (object)
+  (loop for (att . slot) in (find-special-slots (class-of object))
+        for val = (slot-value object slot)
+        when val
+          collect (cons att val)))
+
 (defun emit-hash-table (hash-table stream &optional (delimiter #\Space))
   "Emit a hash table."
   (flet ((string-needs-quoting-p (string)
@@ -42,9 +48,8 @@
     `(let ((,hash-name (if ,attrs
                            (alexandria:copy-hash-table ,attrs)
                            (make-hash-table :test #'equal))))
-       (when ,extra
-         (loop for (key . value) in ,extra do
-           (setf (gethash key ,hash-name) value)))
+       (loop for (key . value) in ,extra do
+         (setf (gethash key ,hash-name) value))
        (emit-hash-table ,hash-name ,stream)
        ,@body)))
 
@@ -55,13 +60,21 @@
      ,@body
      (write-char #\) ,stream)))
 
+(defun %extra (extra-attrs node)
+  (delete "title"
+          (delete nil (append extra-attrs (extra-attributes node)) :key #'cdr)
+          :key #'car
+          :test #'string=))
+
 (defmacro with-tag ((node stream &key name extra-attrs) &body body)
   "Emit a whole tag."
   (let ((name (if name
                   name
                   `(find-tag (class-of ,node)))))
     `(with-tag-name (,name ,stream)
-       (with-tag-attrs ((if ,node (metadata ,node) nil) ,stream :extra ,extra-attrs)
+       (with-tag-attrs ((if ,node (metadata ,node) nil)
+                        ,stream
+                        :extra (%extra ,extra-attrs ,node))
          (with-tag-body (,stream)
            ,@body)))))
 
@@ -72,7 +85,9 @@
                   `(find-tag (class-of ,node)))))
     `(progn
        (with-tag-name ("begin" ,stream)
-         (with-tag-attrs ((if ,node (metadata ,node) nil) ,stream :extra ,extra-attrs)
+         (with-tag-attrs ((if ,node (metadata ,node) nil)
+                          ,stream
+                          :extra (%extra ,extra-attrs ,node))
            (with-tag-body (,stream)
              (write-string ,name ,stream)))
          (write-char #\Newline ,stream))
@@ -99,6 +114,12 @@
   "Emit the children of a node."
   (emit-list (children node) stream))
 
+(defun ws-text-node-p (node)
+  (and (typep node 'text-node)
+       (zerop (length
+               (string-trim #(#\newline #\space #\tab)
+                            (text node))))))
+
 ;;; Basic nodes
 
 (defmethod emit ((node content-node) stream)
@@ -109,8 +130,9 @@
 
 (defmethod emit ((node paragraph) stream)
   "Emit a paragraph."
-  (emit-children node stream)
-  (write-string (make-string 2 :initial-element #\Newline) stream))
+  (unless (every #'ws-text-node-p (children node))
+    (emit-children node stream)
+    (write-string (make-string 2 :initial-element #\Newline) stream)))
 
 ;;; Markup
 
@@ -200,10 +222,7 @@
 (defmethod emit ((doc document) stream)
   (with-tag (nil stream :name "title")
     (write-string (title doc) stream))
-  (write-char #\Newline stream)
-  (write-char #\Newline stream)
-  (emit-children doc stream)
-  (write-char #\Newline stream))
+  (emit-children doc stream))
 
 (defun emit-to-string (node-or-doc)
   (with-output-to-string (stream)
